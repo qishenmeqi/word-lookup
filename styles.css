@@ -116,6 +116,7 @@ main{
 .pad-status{text-align:center;font-size:13px;line-height:1.5;color:var(--muted);min-height:20px;margin-top:8px}
 .pad-status.err{color:#b3261e}
 .hand-note{text-align:center;font-size:12px;color:var(--muted);margin:2px 0 0}
+.load-note{text-align:center;font-size:12px;line-height:1.6;color:var(--muted);margin:12px 0 0;min-height:16px}
 .history{
   display:flex;align-items:center;gap:9px;flex-wrap:wrap;
   margin:14px 4px 0;font-size:14px;color:var(--muted);
