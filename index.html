@@ -61,6 +61,7 @@
   }
   .view{display:flex;flex-direction:column;flex:1}
   .view[hidden]{display:none}
+  .search-inner{margin:auto 0;width:100%}
   .app-head{margin:4px 4px 22px}
   .app-title{font-size:26px;font-weight:700;letter-spacing:.02em;margin:0;line-height:1.2}
   .app-sub{font-size:14px;color:var(--muted);margin:6px 0 0}
@@ -405,6 +406,7 @@
 <body>
 <main>
   <section id="searchView" class="view">
+  <div class="search-inner">
   <header class="app-head">
     <h1 class="app-title">查词</h1>
     <p class="app-sub">中文释义 · 词性 · 发音</p>
@@ -464,6 +466,7 @@
       <span id="historyList" class="chips"></span>
     </div>
   </section>
+  </div>
 
   </section>
 
