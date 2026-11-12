@@ -454,11 +454,12 @@
           </svg>
           <span id="micLabel">开始听</span>
         </button>
+        <button id="spellGo" class="gobtn" type="button">查询</button>
         <button id="spellDel" class="ghostbtn" type="button">退格</button>
         <button id="spellClear" class="ghostbtn" type="button">清空</button>
       </div>
       <div id="micStatus" class="mic-status" role="status"></div>
-      <p class="mic-hint">点麦克风后逐个念字母，比如 S‑E‑R‑E‑N，也可以直接念整个单词；识别错的字母直接点方框改。也可以直接在方框里打字，或粘贴一个单词。</p>
+      <p class="mic-hint">点麦克风后一个字母一个字母慢慢念，中间停顿会自动继续；念完点停止，再点查询。识别错的字母直接点方框改，也可以手动打字。</p>
     </div>
 
     <div id="history" class="history" hidden>
@@ -522,6 +523,7 @@
   var micStatus = document.getElementById('micStatus');
   var spellDel = document.getElementById('spellDel');
   var spellClear = document.getElementById('spellClear');
+  var spellGo = document.getElementById('spellGo');
   var studyEl = document.getElementById('study');
   var studyBack = document.getElementById('studyBack');
   var studyCount = document.getElementById('studyCount');
@@ -1043,9 +1045,11 @@
   var listening = false;
   var recognition = null;
   var spellBase = '';
-  var spellLookupTimer = null;
   var spellHistoryTimer = null;
   var micPrimed = false;
+  var autoRestart = false;
+  var restartAttempts = 0;
+  var restartTimer = null;
   var MAX_LETTERS = 30;
   var SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
 
@@ -1080,6 +1084,7 @@
 
   function transcriptToLetters(text) {
     var s = String(text || '').toLowerCase();
+    s = s.replace(/\b(capital|uppercase|lowercase|letter|letters)\b/g, ' ');
     s = s.replace(/double\s*(?:u|you|yu|w)\b/g, ' w ');
     s = s.replace(/[^a-z]+/g, ' ').trim();
     if (!s) return '';
@@ -1092,6 +1097,28 @@
       out += t;
     }
     return out.slice(0, MAX_LETTERS);
+  }
+
+  function bestTranscript(result) {
+    if (!result) return '';
+    var top = (result[0] && result[0].transcript) || '';
+    for (var i = 0; i < result.length; i++) {
+      var t = String((result[i] && result[i].transcript) || '').trim().toLowerCase();
+      if (/^[a-z]$/.test(t) || LETTER_NAMES[t]) return t;
+    }
+    return top;
+  }
+
+  function appendLetters(base, add) {
+    base = base || '';
+    add = add || '';
+    if (!add) return base.slice(0, MAX_LETTERS);
+    if (add.length === 1) return (base + add).slice(0, MAX_LETTERS);
+    var max = Math.min(base.length, add.length);
+    for (var k = max; k > 0; k--) {
+      if (base.slice(-k) === add.slice(0, k)) return (base + add.slice(k)).slice(0, MAX_LETTERS);
+    }
+    return (base + add).slice(0, MAX_LETTERS);
   }
 
   function setMicStatus(text, isError) {
@@ -1107,6 +1134,9 @@
   }
 
   function stopListening() {
+    autoRestart = false;
+    clearTimeout(restartTimer);
+    restartTimer = null;
     var r = recognition;
     recognition = null;
     listening = false;
@@ -1121,7 +1151,11 @@
       try { r.abort(); } catch (e) {}
     }
     updateMicUI();
-    setMicStatus('');
+    if (letters.length) {
+      setMicStatus('已停止，共 ' + letters.length + ' 个字母。可以改字母，点查询看释义。');
+    } else {
+      setMicStatus('');
+    }
   }
 
   function primeMic(cb) {
@@ -1150,58 +1184,70 @@
       try { document.activeElement.blur(); } catch (e) {}
     }
     try { if (window.speechSynthesis) window.speechSynthesis.cancel(); } catch (e) {}
+    autoRestart = true;
+    restartAttempts = 0;
     spellBase = letters.join('');
     primeMic(doStartRecognition);
   }
 
   function doStartRecognition() {
-    if (listening) return;
+    if (recognition) return;
+    var rec;
     try {
-      recognition = new SpeechRec();
+      rec = new SpeechRec();
     } catch (e) {
+      autoRestart = false;
+      listening = false;
+      updateMicUI();
       setMicStatus('无法启动语音识别：' + (e && e.message ? e.message : e), true);
       return;
     }
-    recognition.lang = 'en-US';
-    recognition.continuous = true;
-    recognition.interimResults = true;
-    recognition.maxAlternatives = 1;
+    recognition = rec;
+    spellBase = letters.join('');
+    rec.lang = 'en-US';
+    rec.continuous = true;
+    rec.interimResults = true;
+    rec.maxAlternatives = 3;
 
     var started = false;
     var guard = setTimeout(function () {
-      if (!started && recognition) {
-        var r = recognition;
+      if (!started && recognition === rec) {
         recognition = null;
+        autoRestart = false;
         listening = false;
         updateMicUI();
-        try { r.abort(); } catch (e) {}
+        try { rec.abort(); } catch (e) {}
         setMicStatus('麦克风没有启动成功，请再点一次。', true);
       }
     }, 7000);
 
-    recognition.onstart = function () {
+    rec.onstart = function () {
+      if (recognition !== rec) return;
       started = true;
       clearTimeout(guard);
       listening = true;
       updateMicUI();
-      setMicStatus('正在听…逐个念字母');
+      setMicStatus(restartAttempts > 0
+        ? '继续听…一个字母一个字母慢慢念，念完点停止'
+        : '正在听…一个字母一个字母慢慢念，念完点停止');
     };
-    recognition.onresult = function (ev) {
+    rec.onresult = function (ev) {
+      if (recognition !== rec) return;
       started = true;
       clearTimeout(guard);
+      restartAttempts = 0;
       var text = '';
-      for (var i = 0; i < ev.results.length; i++) {
-        var alt = ev.results[i][0];
-        if (alt && alt.transcript) text += ' ' + alt.transcript;
-      }
+      for (var i = 0; i < ev.results.length; i++) text += ' ' + bestTranscript(ev.results[i]);
       var parsed = transcriptToLetters(text);
-      var combined = (spellBase + parsed).slice(0, MAX_LETTERS);
+      var combined = appendLetters(spellBase, parsed);
       setLetters(combined, -1);
       setMicStatus('听到：' + (combined ? combined.toUpperCase() : '…'));
     };
-    recognition.onerror = function (ev) {
+    rec.onerror = function (ev) {
       clearTimeout(guard);
+      if (recognition !== rec) return;
       if (ev.error === 'aborted') return;
+      autoRestart = false;
       var map = {
         'not-allowed': '麦克风权限被拒绝。请在 Safari 设置中允许麦克风后重试。',
         'service-not-allowed': '语音识别被系统限制，请检查 Siri 与键盘听写是否已开启。',
@@ -1211,23 +1257,44 @@
       };
       setMicStatus(map[ev.error] || ('语音识别出错：' + ev.error), true);
     };
-    recognition.onend = function () {
+    rec.onend = function () {
       clearTimeout(guard);
+      if (recognition !== rec) return;
       recognition = null;
+      if (autoRestart) {
+        if (restartAttempts < 6) {
+          restartAttempts++;
+          var delay = Math.min(250 + restartAttempts * 120, 1000);
+          setMicStatus('继续听…一个字母一个字母慢慢念，念完点停止');
+          clearTimeout(restartTimer);
+          restartTimer = setTimeout(function () {
+            if (autoRestart && !recognition) doStartRecognition();
+          }, delay);
+          return;
+        }
+        autoRestart = false;
+        listening = false;
+        updateMicUI();
+        setMicStatus('先停一下，点麦克风可以继续念。');
+        return;
+      }
       listening = false;
       updateMicUI();
       if (!micStatus.classList.contains('err')) {
-        setMicStatus(letters.length ? '已停止，点麦克风可以继续念。' : '没听到字母，再点一次麦克风试试。');
+        setMicStatus(letters.length
+          ? '已停止，共 ' + letters.length + ' 个字母。可以改字母，点查询看释义。'
+          : '没听到字母，再点一次麦克风试试。');
       }
     };
 
     listening = true;
     updateMicUI();
-    setMicStatus('正在启动麦克风…');
+    setMicStatus(restartAttempts > 0 ? '继续听…' : '正在启动麦克风…');
     try {
-      recognition.start();
+      rec.start();
     } catch (e) {
-      recognition = null;
+      if (recognition === rec) recognition = null;
+      autoRestart = false;
       listening = false;
       updateMicUI();
       setMicStatus('启动失败，请再点一次麦克风。', true);
@@ -1269,6 +1336,10 @@
     } else {
       letterBoxes.scrollLeft = letterBoxes.scrollWidth;
     }
+    if (spellOpen) {
+      input.value = letters.join('');
+      toggleClear();
+    }
   }
 
   function onLetterInput(ev) {
@@ -1282,7 +1353,7 @@
     else letters.push(ch);
     letters = letters.slice(0, MAX_LETTERS);
     renderLetterBoxes(idx + 1);
-    scheduleSpellLookup();
+    updateSpellSummary();
   }
 
   function onLetterKey(ev) {
@@ -1298,10 +1369,10 @@
         letters.splice(idx - 1, 1);
         renderLetterBoxes(idx - 1);
       }
-      scheduleSpellLookup();
+      updateSpellSummary();
     } else if (ev.key === 'Enter') {
       ev.preventDefault();
-      spellLookupNow();
+      spellLookupNow(true);
     } else if (ev.key === 'ArrowLeft' && idx > 0) {
       ev.preventDefault();
       var prev = letterBoxes.children[idx - 1];
@@ -1330,18 +1401,18 @@
       letters = letters.slice(0, MAX_LETTERS);
       renderLetterBoxes(Math.min(idx + 1, letters.length));
     }
-    scheduleSpellLookup();
+    updateSpellSummary();
   }
 
   function setLetters(str, focusIndex) {
     letters = String(str || '').toLowerCase().replace(/[^a-z]/g, '').slice(0, MAX_LETTERS).split('');
     renderLetterBoxes(focusIndex);
-    scheduleSpellLookup();
   }
 
-  function scheduleSpellLookup() {
-    clearTimeout(spellLookupTimer);
-    spellLookupTimer = setTimeout(spellLookupNow, 280);
+  function updateSpellSummary() {
+    if (listening) return;
+    if (letters.length) setMicStatus('已输入 ' + letters.length + ' 个字母，可以改字母，点查询看释义。');
+    else setMicStatus('');
   }
 
   function isEdit1(a, b) {
@@ -1396,7 +1467,7 @@
           b.appendChild(el('span', 'cand-gloss', glossOf(e[2])));
           b.addEventListener('click', function () {
             setLetters(e[0], -1);
-            spellLookupNow();
+            spellLookupNow(true);
           });
           list.appendChild(b);
         })(cands[i]);
@@ -1412,12 +1483,11 @@
     resultEl.appendChild(card);
   }
 
-  function spellLookupNow() {
-    clearTimeout(spellLookupTimer);
+  function spellLookupNow(navigate) {
     clearTimeout(spellHistoryTimer);
     var word = letters.join('');
     if (!word) {
-      if (spellOpen) renderSpellHint();
+      setMicStatus('先输入或念几个字母。');
       return;
     }
     var entry = byWord.get(word);
@@ -1436,19 +1506,27 @@
     if (entry) {
       input.value = entry[0];
       toggleClear();
-      renderEntry(entry, note);
-      showResultView();
-      spellHistoryTimer = setTimeout(function () { addHistory(entry[0]); }, 800);
+      if (navigate) {
+        renderEntry(entry, note);
+        showResultView();
+        spellHistoryTimer = setTimeout(function () { addHistory(entry[0]); }, 800);
+      } else {
+        setMicStatus('识别为 ' + entry[0] + '，点查询看释义。');
+      }
       return;
     }
     if (word.length < 2) {
-      renderSpellHint('继续念或输入下一个字母…');
+      setMicStatus('继续输入或念下一个字母…');
       return;
     }
     input.value = word;
     toggleClear();
-    renderSpellCandidates(word, findSpellCandidates(word));
-    showResultView();
+    if (navigate) {
+      renderSpellCandidates(word, findSpellCandidates(word));
+      showResultView();
+    } else {
+      setMicStatus('没找到完全匹配，点查询看候选项。');
+    }
   }
 
   function setSpellOpen(open) {
@@ -1457,6 +1535,10 @@
     spellToggle.classList.toggle('active', spellOpen);
     spellToggle.setAttribute('aria-expanded', String(spellOpen));
     if (spellOpen) {
+      if (!letters.length) {
+        var seed = input.value.toLowerCase().replace(/[^a-z]/g, '');
+        if (seed) letters = seed.slice(0, MAX_LETTERS).split('');
+      }
       renderLetterBoxes();
       if (!letters.length) renderSpellHint();
       if (!SpeechRec) setMicStatus('这个浏览器不支持语音识别，可以直接在方框里输入字母。');
@@ -1476,21 +1558,25 @@
     if (listening) stopListening();
     letters = [];
     renderLetterBoxes(0);
-    setMicStatus('');
-    spellLookupNow();
+    updateSpellSummary();
   });
   spellDel.addEventListener('click', function () {
     if (listening) stopListening();
     letters.pop();
     renderLetterBoxes(letters.length);
-    scheduleSpellLookup();
+    updateSpellSummary();
+  });
+  spellGo.addEventListener('click', function () {
+    if (listening) stopListening();
+    spellLookupNow(true);
   });
   input.addEventListener('focus', function () { if (listening) stopListening(); });
 
   window.__spellDebug = {
     parse: transcriptToLetters,
+    append: appendLetters,
     letters: function () { return letters.slice(); },
-    setLetters: function (s) { setLetters(s, -1); spellLookupNow(); }
+    setLetters: function (s) { setLetters(s, -1); }
   };
 
   /* ---------- 记单词 ---------- */
@@ -1970,6 +2056,12 @@
     input.value = '';
     clearTimeout(typeTimer);
     clearTimeout(historyTimer);
+    if (spellOpen) {
+      if (listening) stopListening();
+      letters = [];
+      renderLetterBoxes();
+      setMicStatus('');
+    }
     toggleClear();
     hideSuggest();
     input.focus();
