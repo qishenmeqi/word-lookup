@@ -179,6 +179,22 @@
   .cand:hover{background:var(--accent-soft)}
   .cand-word{flex:none;font-size:17px;font-weight:600}
   .cand-gloss{font-size:14px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .type-badge{
+    display:inline-block;font-size:12px;line-height:1.2;color:var(--accent);
+    background:var(--accent-soft);border-radius:999px;padding:4px 9px;vertical-align:middle;
+  }
+  .cn-note{font-size:14px;color:var(--muted);line-height:1.6;margin:12px 0 0}
+  .cn-list{display:flex;flex-direction:column;gap:8px;margin-top:16px}
+  .cn-item{
+    display:flex;align-items:baseline;gap:10px;width:100%;text-align:left;
+    padding:12px 14px;border:1px solid var(--line);border-radius:12px;
+    background:transparent;color:var(--ink);font-family:inherit;cursor:pointer;
+  }
+  .cn-item:hover{background:var(--surface2)}
+  .cn-word{flex:none;font-size:20px;font-weight:600}
+  .cn-phon{flex:none;font-size:13px;color:var(--muted)}
+  .cn-gloss{font-size:14px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+  .cn-back{margin-top:16px}
   .spell-status{font-size:15px;line-height:1.6;color:var(--muted);margin:12px 0 0}
   .spell-result .word{font-size:clamp(30px,5.4vw,44px)}
   .spell-result-actions{display:flex;flex-wrap:wrap;gap:10px;margin-top:16px}
@@ -387,6 +403,8 @@
     .gobtn{height:42px;padding:0 13px;font-size:15px}
     .gloss{font-size:19px}
     .word{font-size:clamp(34px,10vw,46px)}
+    .cn-item{flex-wrap:wrap;gap:6px 8px}
+    .cn-gloss{white-space:normal;flex-basis:100%}
     .spell-panel{padding:14px}
     .letter{width:38px;height:50px;font-size:22px}
     .study{padding-left:12px;padding-right:12px}
@@ -409,7 +427,7 @@
   <div class="search-inner">
   <header class="app-head">
     <h1 class="app-title">查词</h1>
-    <p class="app-sub">中文释义 · 词性 · 发音</p>
+    <p class="app-sub">英汉互查 · 词性 · 发音</p>
   </header>
 
   <section class="search" aria-label="单词查询">
@@ -421,7 +439,7 @@
         </svg>
         <input id="q" type="text" inputmode="search" enterkeyhint="search"
                autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false"
-               placeholder="输入英文单词…" aria-label="输入英文单词">
+               placeholder="输入英文单词或中文…" aria-label="输入英文单词或中文">
         <button id="clear" type="button" aria-label="清空">×</button>
         <button id="goBtn" class="gobtn" type="button">查询</button>
       </div>
@@ -541,6 +559,151 @@
   var freqOrder = ENTRIES.slice().sort(function (a, b) {
     return a[3] - b[3] || a[0].localeCompare(b[0]);
   });
+
+  var cnIndex = null;
+  var cnKeys = [];
+  var CN_ALIASES = {
+    '你好': ['hello'], '您好': ['hello'], '谢谢': ['thank', 'thanks'],
+    '再见': ['goodbye', 'bye'], '对不起': ['sorry'], '没关系': ['matter'],
+    '请': ['please'], '早上好': ['morning'], '晚上好': ['evening'],
+    '晚安': ['goodnight', 'night'], '我爱你': ['love'],
+    '为什么': ['why'], '什么': ['what'], '怎么': ['how'], '谁': ['who'],
+    '哪里': ['where'], '多少钱': ['cost', 'price', 'much'],
+    '苹果': ['apple'], '老师': ['teacher'], '学生': ['student'],
+    '朋友': ['friend'], '词典': ['dictionary'], '学习': ['study', 'learn'],
+    '工作': ['work'], '时间': ['time'], '今天': ['today'], '明天': ['tomorrow'], '昨天': ['yesterday']
+  };
+
+  function isHan(s) {
+    return /[一-鿿]/.test(s);
+  }
+
+  function buildChineseIndex() {
+    if (cnIndex) return;
+    cnIndex = new Map();
+    cnKeys = [];
+    function add(seg, idx, pos) {
+      seg = String(seg || '').trim();
+      if (!seg || !isHan(seg) || seg.length > 24) return;
+      var arr = cnIndex.get(seg);
+      if (!arr) {
+        arr = [];
+        cnIndex.set(seg, arr);
+        cnKeys.push(seg);
+      }
+      arr.push({ i: idx, p: pos });
+    }
+    for (var i = 0; i < ENTRIES.length; i++) {
+      var lines = String(ENTRIES[i][2] || '').split('\n');
+      for (var l = 0; l < lines.length; l++) {
+        var line = lines[l].replace(/^[A-Za-z]{1,6}\.\s*/, '').replace(/^\[[^\]]+\]\s*/, '').trim();
+        if (!line) continue;
+        add(line, i, l * 20);
+        var parts = line.split(/[,，;；、]/);
+        for (var p = 0; p < parts.length; p++) add(parts[p], i, l * 20 + p);
+      }
+    }
+  }
+
+  function searchChinese(q) {
+    if (!cnIndex) {
+      resultEl.replaceChildren();
+      var card = el('article', 'entry');
+      card.appendChild(wordline(q, ''));
+      var st = el('div', 'status');
+      st.appendChild(el('span', 'spinner'));
+      st.appendChild(el('span', '', '正在建立中文索引…'));
+      card.appendChild(st);
+      resultEl.appendChild(card);
+      setTimeout(function () {
+        buildChineseIndex();
+        doChineseSearch(q);
+      }, 30);
+      return;
+    }
+    doChineseSearch(q);
+  }
+
+  function doChineseSearch(q) {
+    var best = new Map();
+    function addEntry(entry, score) {
+      if (!entry) return;
+      var cur = best.get(entry[0]);
+      if (!cur || score < cur.score) best.set(entry[0], { e: entry, score: score });
+    }
+    var exact = cnIndex.get(q);
+    if (exact) {
+      for (var i = 0; i < exact.length; i++) addEntry(ENTRIES[exact[i].i], exact[i].p);
+    }
+    var aliases = CN_ALIASES[q];
+    if (aliases) {
+      for (var a = 0; a < aliases.length; a++) {
+        var ae = byWord.get(aliases[a].toLowerCase());
+        if (ae) addEntry(ae, -1);
+      }
+    }
+    if (best.size < 20) {
+      for (var k = 0; k < cnKeys.length; k++) {
+        var key = cnKeys[k];
+        if (key === q) continue;
+        if (key.indexOf(q) >= 0 || q.indexOf(key) >= 0) {
+          var items = cnIndex.get(key);
+          for (var j = 0; j < items.length; j++) addEntry(ENTRIES[items[j].i], items[j].p + 100);
+        }
+        if (best.size > 300) break;
+      }
+    }
+    var results = Array.from(best.values());
+    results.sort(function (a, b) {
+      return a.score - b.score || a.e[3] - b.e[3] || a.e[0].localeCompare(b.e[0]);
+    });
+    renderChineseResults(q, results.slice(0, 40).map(function (r) { return r.e; }));
+  }
+
+  function renderChineseResults(q, list) {
+    resultEl.replaceChildren();
+    var card = el('article', 'entry');
+    var wl = el('div', 'wordline');
+    wl.appendChild(el('span', 'type-badge', '中文查英文'));
+    wl.appendChild(el('span', 'phon', q));
+    card.appendChild(wl);
+    if (!list.length) {
+      card.appendChild(el('p', 'cn-note', '没有找到对应的英文词。可以换个说法，或直接输入英文。'));
+      resultEl.appendChild(card);
+      return;
+    }
+    card.appendChild(el('p', 'cn-note', '找到 ' + list.length + ' 个英文词，点一个查看释义。'));
+    var box = el('div', 'cn-list');
+    for (var i = 0; i < list.length; i++) {
+      (function (entry) {
+        var b = el('button', 'cn-item');
+        b.type = 'button';
+        b.appendChild(el('span', 'cn-word', entry[0]));
+        if (entry[1]) b.appendChild(el('span', 'cn-phon', '/' + entry[1] + '/'));
+        b.appendChild(el('span', 'cn-gloss', glossOf(entry[2])));
+        b.addEventListener('click', function () {
+          addHistory(entry[0]);
+          renderEntry(entry, '中文查询：' + q);
+          appendBackToChinese(q, list);
+        });
+        box.appendChild(b);
+      })(list[i]);
+    }
+    card.appendChild(box);
+    resultEl.appendChild(card);
+  }
+
+  function appendBackToChinese(q, list) {
+    var card = resultEl.querySelector('.entry');
+    if (!card) return;
+    var btn = el('button', 'ghostbtn cn-back', '← 返回中文结果');
+    btn.type = 'button';
+    btn.addEventListener('click', function () {
+      renderChineseResults(q, list);
+      window.scrollTo(0, 0);
+    });
+    card.appendChild(btn);
+  }
 
   var POS = {
     n: '名词', v: '动词', vt: '及物动词', vi: '不及物动词',
@@ -807,6 +970,10 @@
     hideSuggest();
     clearTimeout(historyTimer);
     showResultView();
+    if (isHan(v)) {
+      searchChinese(v);
+      return;
+    }
     var lower = v.toLowerCase();
     var entry = byWord.get(lower);
     var note = '';
